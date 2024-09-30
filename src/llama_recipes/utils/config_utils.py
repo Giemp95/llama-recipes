@@ -17,7 +17,7 @@ from transformers.data import DataCollatorForSeq2Seq
 
 from llama_recipes.configs import datasets, lora_config, llama_adapter_config, prefix_config, train_config
 from llama_recipes.data.sampler import LengthBasedBatchSampler, DistributedLengthBasedBatchSampler
-from llama_recipes.datasets import DATASET_PREPROC
+from llama_recipes.llama_datasets import DATASET_PREPROC
 
 def update_config(config, **kwargs):
     if isinstance(config, (tuple, list)):
@@ -36,8 +36,8 @@ def update_config(config, **kwargs):
                     else:
                         # In case of specialized config we can warn user
                         print(f"Warning: {config_name} does not accept parameter: {k}")
-            elif isinstance(config, train_config):
-                print(f"Warning: unknown parameter {k}")
+            #elif isinstance(config, train_config):
+            #    print(f"Warning: unknown parameter {k}")
 
 
 def generate_peft_config(train_config, kwargs):

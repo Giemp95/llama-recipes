@@ -1,4 +1,3 @@
-torch>=2.2
 accelerate
 appdirs
 loralib
@@ -8,7 +7,7 @@ black[jupyter]
 datasets
 fire
 peft
-transformers>=4.43.1
+transformers>=4.45.0
 sentencepiece
 py7zr
 scipy
@@ -25,3 +24,7 @@ faiss-gpu; python_version < '3.11'
 unstructured[pdf]
 sentence_transformers
 codeshield
+llama-stack
+fairscale
+blobfile
+wandb

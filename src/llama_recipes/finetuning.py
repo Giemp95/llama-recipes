@@ -23,6 +23,7 @@ from transformers import (
     AutoProcessor, 
     MllamaForConditionalGeneration,
     AutoModel,
+    LlamaForCausalLM
 )
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mllama.modeling_mllama import  MllamaSelfAttentionDecoderLayer,MllamaCrossAttentionDecoderLayer,MllamaVisionEncoderLayer
@@ -55,8 +56,10 @@ from llama_recipes.utils.train_utils import (
 )
 from accelerate.utils import is_xpu_available
 from warnings import warn
+from copy import deepcopy
+from accelerate import init_empty_weights
 
-def setup_wandb(train_config, fsdp_config, **kwargs):
+def setup_wandb(train_config, fsdp_config, rank, **kwargs):
     try:
         import wandb
     except ImportError:
@@ -68,7 +71,7 @@ def setup_wandb(train_config, fsdp_config, **kwargs):
     wandb_config = WANDB_CONFIG()
     update_config(wandb_config, **kwargs)
     init_dict = dataclasses.asdict(wandb_config)
-    run = wandb.init(**init_dict)
+    run = wandb.init(name='worker_'+str(rank), **init_dict)
     run.config.update(train_config)
     run.config.update(fsdp_config, allow_val_change=True)
     return run
@@ -91,18 +94,21 @@ def main(**kwargs):
         world_size = int(os.environ["WORLD_SIZE"])
 
     if torch.distributed.is_initialized():
+        gpu_index = local_rank if not train_config.one_gpu else 0
         if is_xpu_available():
-            torch.xpu.set_device(local_rank)
+            torch.xpu.set_device(gpu_index)
         elif torch.cuda.is_available():
-            torch.cuda.set_device(local_rank)
-        clear_gpu_cache(local_rank)
-        setup_environ_flags(rank)
+            torch.cuda.set_device(gpu_index)
+        clear_gpu_cache(gpu_index)
+        #setup_environ_flags(rank)
 
     wandb_run = None
 
     if train_config.use_wandb:
-        if not train_config.enable_fsdp or rank==0:
-            wandb_run = setup_wandb(train_config, fsdp_config, **kwargs)
+        if train_config.enable_fsdp:
+            wandb_run = setup_wandb(train_config, fsdp_config, rank, **kwargs)
+        else:
+            wandb_run = setup_wandb(train_config, fsdp_config, 0, **kwargs)
     
     #setting quantization configs
     bnb_config = None
@@ -134,7 +140,8 @@ def main(**kwargs):
         processor.tokenizer.padding_side='right'
     elif config.model_type == "llama":
         is_vision = False
-        model = AutoModel.from_pretrained(
+        #model = AutoModel.from_pretrained(
+        model = LlamaForCausalLM.from_pretrained(
             train_config.model_name,
             quantization_config=bnb_config,
             use_cache=use_cache,
@@ -193,11 +200,8 @@ def main(**kwargs):
         else:
         # Create the FSDP wrapper for LlamaDecoderLayer in text models
             my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, [LlamaDecoderLayer])
-        device_id = 0
-        if is_xpu_available():
-            device_id = torch.xpu.current_device()
-        elif torch.cuda.is_available():
-            device_id = torch.cuda.current_device()
+        model_old = deepcopy(model)
+
         model = FSDP(
             model,
             auto_wrap_policy= my_auto_wrapping_policy if train_config.use_peft else wrapping_policy,
@@ -205,7 +209,7 @@ def main(**kwargs):
             mixed_precision=mixed_precision_policy if not fsdp_config.pure_bf16 else None,
             sharding_strategy=fsdp_config.sharding_strategy,
             device_mesh=hsdp_device_mesh_plan,
-            device_id=device_id,
+            device_id=gpu_index,
             limit_all_gathers=True,
             sync_module_states=train_config.low_cpu_fsdp,
             param_init_fn=(lambda module: module.to_empty(device=torch.device("cuda"), recurse=False))
@@ -220,6 +224,7 @@ def main(**kwargs):
             model.to("xpu:0")
         elif torch.cuda.is_available():
             model.to("cuda")
+
     dataset_config = generate_dataset_config(train_config, kwargs)
     if is_vision:
         dataset_processer = processor
@@ -319,6 +324,7 @@ def main(**kwargs):
         local_rank if train_config.enable_fsdp else None,
         rank if train_config.enable_fsdp else None,
         wandb_run,
+        model_old=model_old if train_config.enable_fsdp and train_config.use_fast_kernels else None
     )
     if not train_config.enable_fsdp or rank==0:
         [print(f'Key: {k}, Value: {v}') for k, v in results.items()]

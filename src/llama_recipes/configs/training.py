@@ -12,15 +12,15 @@ class train_config:
     low_cpu_fsdp: bool=False # saves cpu memory by loading pretrained model on rank0 only
     run_validation: bool=True
     batch_size_training: int=4
-    batching_strategy: str="packing" #alternative: padding
+    batching_strategy: str="padding" #alternative: packing
     context_length: int=4096
     gradient_accumulation_steps: int=1
     gradient_clipping: bool = False
     gradient_clipping_threshold: float = 1.0
-    num_epochs: int=3
+    num_epochs: int=1
     max_train_step: int=0
     max_eval_step: int=0
-    num_workers_dataloader: int=1
+    num_workers_dataloader: int=0
     lr: float=1e-4
     weight_decay: float=0.0
     gamma: float= 0.85 # multiplicatively decay the learning rate by gamma after each epoch
@@ -37,7 +37,7 @@ class train_config:
     num_freeze_layers: int = 1
     quantization: str = None
     one_gpu: bool = False
-    save_model: bool = True
+    save_model: bool = False
     dist_checkpoint_root_folder: str="PATH/to/save/FSDP/model" # will be used if using FSDP
     dist_checkpoint_folder: str="fine-tuned" # will be used if using FSDP
     save_optimizer: bool=False # will be used if using FSDP

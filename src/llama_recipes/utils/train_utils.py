@@ -25,6 +25,7 @@ from llama_recipes.policies import fpSixteen,bfSixteen, get_llama_wrapper
 from llama_recipes.utils.memory_utils import MemoryTrace
 from accelerate.utils import is_xpu_available, is_ccl_available
 from llama_recipes.utils.flop_utils import FlopMeasure
+
 def set_tokenizer_params(tokenizer: LlamaTokenizer):
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = "left"
@@ -67,7 +68,7 @@ def profile(cfg, local_rank=None):
         yield None
 
 
-def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, fsdp_config=None, local_rank=None, rank=None, wandb_run=None):
+def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_scheduler, gradient_accumulation_steps, train_config, fsdp_config=None, local_rank=None, rank=None, wandb_run=None, model_old=None):
     """
     Trains the model on the given dataloader
 
@@ -139,7 +140,7 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                             print("max training steps reached, stopping training, total train steps finished: ", total_train_steps-1)
                         break
                     for key in batch.keys():
-                        if train_config.enable_fsdp:
+                        if train_config.enable_fsdp and not train_config.one_gpu:
                             if is_xpu_available():
                                 batch[key] = batch[key].to(torch.device(f"xpu:{local_rank}"))
                             else:
@@ -195,9 +196,54 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                             })
 
                     pbar.set_description(f"Training Epoch: {epoch+1}/{train_config.num_epochs}, step {step}/{len(train_dataloader)} completed (loss: {loss.detach().float()})")
-
                     if train_config.save_metrics:
                         save_to_json(metrics_filename, train_step_loss, train_loss, train_step_perplexity, train_prep, val_step_loss, val_loss, val_step_perplexity, val_prep)
+
+
+                    if train_config.save_model and step%(total_length//2)==0: #TODO: aggiungere parametro per numero di checkpoitns intermedi
+                        checkpoint_start_time = time.perf_counter()
+                        if train_config.enable_fsdp:
+                            dist.barrier()
+                        if train_config.use_peft:
+                            if train_config.enable_fsdp:
+                                if rank==0:
+                                    print(f"we are about to save the PEFT modules")
+                            else:
+                                print(f"we are about to save the PEFT modules")
+                            model.save_pretrained(train_config.output_dir)
+                            if train_config.enable_fsdp:
+                                if rank==0:
+                                    print(f"PEFT modules are saved in {train_config.output_dir} directory")
+                            else:
+                                print(f"PEFT modules are saved in {train_config.output_dir} directory")
+
+                        else:
+                            if not train_config.use_peft and fsdp_config.checkpoint_type == StateDictType.FULL_STATE_DICT:
+
+                                save_model_checkpoint(
+                                    model, optimizer, rank, train_config, epoch=epoch, model_old=model_old, step=step
+                                )
+                            elif not train_config.use_peft and fsdp_config.checkpoint_type == StateDictType.SHARDED_STATE_DICT:
+                                print(" Saving the FSDP model checkpoints using SHARDED_STATE_DICT")
+                                print("=====================================================")
+
+                                save_model_and_optimizer_sharded(model, rank, train_config)
+                                if train_config.save_optimizer:
+                                    save_model_and_optimizer_sharded(model, rank, train_config, optim=optimizer, step=step)
+                                    print(" Saving the FSDP model checkpoints and optimizer using SHARDED_STATE_DICT")
+                                    print("=====================================================")
+
+                            if not train_config.use_peft and  train_config.save_optimizer:
+                                save_optimizer_checkpoint(
+                                    model, optimizer, rank, train_config, epoch=epoch, step=step
+                                )
+                                print(" Saving the FSDP model checkpoints and optimizer using FULL_STATE_DICT")
+                                print("=====================================================")
+                        if train_config.enable_fsdp:
+                            dist.barrier()
+                        checkpoint_end_time = time.perf_counter() - checkpoint_start_time
+                        checkpoint_times.append(checkpoint_end_time)
+
                 pbar.close()
 
         epoch_end_time = time.perf_counter()-epoch_start_time
@@ -250,8 +296,8 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                     elif fsdp_config.checkpoint_type == StateDictType.FULL_STATE_DICT:
                         print(" Saving the FSDP model checkpoint using FULL_STATE_DICT")
                         print("=====================================================")
-                        save_fsdp_model_checkpoint_full(
-                            model, optimizer, rank, train_config, epoch=epoch
+                        save_model_checkpoint(
+                            model, optimizer, rank, train_config, epoch=epoch, model_old=model_old
                         )
                         
                         if train_config.save_optimizer:
@@ -316,8 +362,8 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
     if train_config.flop_counter:
         results["model_tflops"]= TFlops
     #saving the training params including fsdp setting for reference.
-    if train_config.enable_fsdp and not train_config.use_peft and rank==0:
-        save_train_params(train_config, fsdp_config, rank)
+    #if train_config.enable_fsdp and not train_config.use_peft and rank==0:
+    #    save_train_params(train_config, fsdp_config, rank)
 
     return results
 

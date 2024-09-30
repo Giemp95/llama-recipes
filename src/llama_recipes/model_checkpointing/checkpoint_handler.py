@@ -123,12 +123,16 @@ def save_model_and_optimizer_sharded(model, rank, cfg,optim=None):
         print(
             f"Checkpoint Time = {t1-t0:.4f}\n"
         )
+
+# Added the necessary logic to save complete state models in half precision (and chekcpoints) when doing distributed training
 def save_fsdp_model_checkpoint_full(
     model,
     optimizer,
     rank,
     cfg,
     epoch=1,
+    model_old=None,
+    step=-1
 ):
     """saving model via rank0 cpu streaming and full_state_dict"""
 
@@ -143,25 +147,33 @@ def save_fsdp_model_checkpoint_full(
     if rank == 0:
         print(f"--> saving model ...")
         # create save path
-        folder_name = (
-        cfg.dist_checkpoint_root_folder
-        + "/"
-        + cfg.dist_checkpoint_folder
-        + "-"
-        + cfg.model_name
-        )
-        save_dir = Path.cwd() / folder_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-        save_name = cfg.model_name.replace("/","--") + "-" + str(epoch) + ".pt"
-        save_full_path = str(save_dir) + "/" + save_name
+        #folder_name = (
+        #cfg.dist_checkpoint_root_folder
+        #+ "/"
+        #+ cfg.dist_checkpoint_folder
+        #+ "-"
+        #+ cfg.model_name
+        #)
+        #save_dir = Path.cwd() / 'checkpoints'
+        
+        if step==-1:
+            save_dir = Path(cfg.output_dir)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            save_full_path = str(save_dir)
+        else:
+            save_dir = Path(cfg.dist_checkpoint_root_folder)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            save_name = 'checkpoint' + "-" + str(epoch) + "_" + str(step) + ".pt"
+            save_full_path = str(save_dir) + "/" + save_name
 
         # save model
-        torch.save(cpu_state, save_full_path)
-
-        
-        print(f"model checkpoint saved for epoch {epoch} at {save_full_path}\n")
-      
-
+        for k in cpu_state:
+            cpu_state[k] = cpu_state[k].half()
+        if cfg.enable_fsdp and cfg.use_fast_kernels:
+            model_old.save_pretrained(save_full_path, state_dict=cpu_state, safe_serialization=False)
+        else:
+            model.save_pretrained(save_full_path, state_dict=cpu_state, safe_serialization=False)
+            print(f"model checkpoint saved for epoch {epoch} at {save_full_path}\n")
 
 def load_model_checkpoint(model, rank, cfg):
     """load local checkpoint to rank0 cpu
