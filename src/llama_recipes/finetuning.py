@@ -8,6 +8,7 @@ import dataclasses
 import fire
 import random
 import torch
+import time
 import torch.optim as optim
 from peft import get_peft_model, PeftModel
 from torch.distributed.fsdp import (
@@ -23,7 +24,7 @@ from transformers import (
     AutoProcessor, 
     MllamaForConditionalGeneration,
     AutoModel,
-    LlamaForCausalLM
+    AutoModelForCausalLM
 )
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mllama.modeling_mllama import  MllamaSelfAttentionDecoderLayer,MllamaCrossAttentionDecoderLayer,MllamaVisionEncoderLayer
@@ -100,7 +101,7 @@ def main(**kwargs):
         elif torch.cuda.is_available():
             torch.cuda.set_device(gpu_index)
         clear_gpu_cache(gpu_index)
-        #setup_environ_flags(rank)
+        # setup_environ_flags(rank)
 
     wandb_run = None
 
@@ -138,19 +139,21 @@ def main(**kwargs):
     )
         processor = AutoProcessor.from_pretrained(train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name)
         processor.tokenizer.padding_side='right'
-    elif config.model_type == "llama":
+    else: #if config.model_type == "llama":
         is_vision = False
         #model = AutoModel.from_pretrained(
-        model = LlamaForCausalLM.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             train_config.model_name,
             quantization_config=bnb_config,
             use_cache=use_cache,
-            attn_implementation="sdpa" if train_config.use_fast_kernels else None,
+            attn_implementation="flash_attention_2", #attn_implementation="sdpa" if train_config.use_fast_kernels else None,
             device_map="auto" if train_config.quantization and not train_config.enable_fsdp else None,
             torch_dtype=torch.float16 if train_config.use_fp16 else torch.bfloat16,
+            #use_flash_attention_2=True,
+            local_files_only=True
         )
-    else:
-        raise ValueError(f"Model type {config.model_type} is not supported. Please use llama or mllama model.")
+    #else:
+    #    raise ValueError(f"Model type {config.model_type} is not supported. Please use llama or mllama model.")
     # Load the tokenizer and add special tokens
     tokenizer = AutoTokenizer.from_pretrained(train_config.model_name if train_config.tokenizer_name is None else train_config.tokenizer_name)
     if not tokenizer.pad_token_id: 
@@ -183,7 +186,7 @@ def main(**kwargs):
 
     hsdp_device_mesh_plan = None
     if fsdp_config.hsdp and fsdp_config.sharding_strategy == ShardingStrategy.HYBRID_SHARD:
-        hsdp_device_mesh_plan = hsdp_device_mesh(replica_group_size=fsdp_config.replica_group_size, sharding_group_size=fsdp_config.sharding_group_size)
+        hsdp_device_mesh_plan = hsdp_device_mesh(replica_group_size=fsdp_config.replica_group_size, sharding_group_size=fsdp_config.sharding_group_size, device="cuda")
         print("HSDP device mesh is ready")
 
     #setting up FSDP if enable_fsdp is enabled
@@ -200,8 +203,10 @@ def main(**kwargs):
         else:
         # Create the FSDP wrapper for LlamaDecoderLayer in text models
             my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, [LlamaDecoderLayer])
-        model_old = deepcopy(model)
+        
+        #model_old = None #deepcopy(model)
 
+        fsdp_setup_time = time.perf_counter()
         model = FSDP(
             model,
             auto_wrap_policy= my_auto_wrapping_policy if train_config.use_peft else wrapping_policy,
@@ -209,7 +214,7 @@ def main(**kwargs):
             mixed_precision=mixed_precision_policy if not fsdp_config.pure_bf16 else None,
             sharding_strategy=fsdp_config.sharding_strategy,
             device_mesh=hsdp_device_mesh_plan,
-            device_id=gpu_index,
+            device_id=torch.cuda.current_device(),
             limit_all_gathers=True,
             sync_module_states=train_config.low_cpu_fsdp,
             param_init_fn=(lambda module: module.to_empty(device=torch.device("cuda"), recurse=False))
@@ -218,7 +223,8 @@ def main(**kwargs):
         if fsdp_config.fsdp_activation_checkpointing:            
             model.enable_input_require_grads()
             model.gradient_checkpointing_enable()
-            apply_fsdp_checkpointing(model)                      
+            apply_fsdp_checkpointing(model)
+        print(f"[{rank}] FSDP setup time: " + str(time.perf_counter()-fsdp_setup_time))                
     elif not train_config.quantization and not train_config.enable_fsdp:
         if is_xpu_available():
             model.to("xpu:0")
@@ -324,7 +330,7 @@ def main(**kwargs):
         local_rank if train_config.enable_fsdp else None,
         rank if train_config.enable_fsdp else None,
         wandb_run,
-        model_old=model_old if train_config.enable_fsdp and train_config.use_fast_kernels else None
+        #model_old=model_old if train_config.enable_fsdp and train_config.use_fast_kernels else None
     )
     if not train_config.enable_fsdp or rank==0:
         [print(f'Key: {k}, Value: {v}') for k, v in results.items()]

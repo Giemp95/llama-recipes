@@ -14,7 +14,7 @@ from torch.distributed.fsdp import (
     # ShardedStateDictConfig, # un-flattened param but shards, usable by other parallel schemes.
 )
 
-from torch.distributed._shard.checkpoint import (
+from torch.distributed.checkpoint import (
     FileSystemReader,
     FileSystemWriter,
     save_state_dict,
@@ -26,10 +26,11 @@ from torch.distributed.checkpoint.default_planner import (
 )
 
 
-from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions
+from torch.distributed.checkpoint.state_dict import get_model_state_dict, StateDictOptions, get_state_dict
 from torch.distributed.fsdp.fully_sharded_data_parallel import StateDictType
-import torch.distributed._shard.checkpoint as dist_cp
+import torch.distributed.checkpoint as dist_cp
 import torch.distributed as dist
+
 
 
 def get_date_of_run():
@@ -140,8 +141,7 @@ def save_fsdp_model_checkpoint_full(
         model, StateDictType.FULL_STATE_DICT, fullstate_save_policy
     ):
         cpu_state = model.state_dict()
-
-        print(f"saving process: rank {rank}  done w model state_dict\n")
+    #print(f"saving process: rank {rank} done w model state_dict\n")
    
 
     if rank == 0:
@@ -156,15 +156,16 @@ def save_fsdp_model_checkpoint_full(
         #)
         #save_dir = Path.cwd() / 'checkpoints'
         
+        model_name = cfg.model_name.split('/')[-1]
         if step==-1:
             save_dir = Path(cfg.output_dir)
-            save_dir.mkdir(parents=True, exist_ok=True)
-            save_full_path = str(save_dir)
+            save_name = model_name
         else:
             save_dir = Path(cfg.dist_checkpoint_root_folder)
-            save_dir.mkdir(parents=True, exist_ok=True)
-            save_name = 'checkpoint' + "-" + str(epoch) + "_" + str(step) + ".pt"
-            save_full_path = str(save_dir) + "/" + save_name
+            save_name = model_name + '-checkpoint' + "-" + str(epoch) + "_" + str(step) + ".pt"
+        
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_full_path = str(save_dir) + "/" + save_name
 
         # save model
         for k in cpu_state:

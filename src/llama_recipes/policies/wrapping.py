@@ -4,13 +4,13 @@
 import functools
 
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
-from transformers.models.mllama.modeling_mllama import   MllamaSelfAttentionDecoderLayer,MllamaCrossAttentionDecoderLayer,MllamaVisionEncoderLayer
+from transformers.models.mllama.modeling_mllama import MllamaSelfAttentionDecoderLayer,MllamaCrossAttentionDecoderLayer,MllamaVisionEncoderLayer
+from transformers.models.mixtral.modeling_mixtral import MixtralDecoderLayer
 
 from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
     size_based_auto_wrap_policy,
 )
-
 
 def get_size_policy(min_params=1e8):
     num_wrap_policy = functools.partial(
@@ -27,7 +27,7 @@ def get_llama_wrapper():
 
     llama_auto_wrap_policy = functools.partial(
         transformer_auto_wrap_policy,
-        transformer_layer_cls=set([LlamaDecoderLayer, MllamaSelfAttentionDecoderLayer,MllamaVisionEncoderLayer,MllamaCrossAttentionDecoderLayer])
+        transformer_layer_cls= set([LlamaDecoderLayer, MllamaSelfAttentionDecoderLayer,MllamaVisionEncoderLayer,MllamaCrossAttentionDecoderLayer,MixtralDecoderLayer])
     )
 
     return llama_auto_wrap_policy

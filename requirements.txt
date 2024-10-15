@@ -28,3 +28,4 @@ llama-stack
 fairscale
 blobfile
 wandb
+huggingface_hub[hf_transfer]
